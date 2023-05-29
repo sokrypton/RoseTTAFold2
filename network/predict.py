@@ -192,8 +192,6 @@ class Predictor():
         n_templ=4, msa_mask=0.0, is_training=False, msa_concat_mode="default"
     ):
         self.xyz_converter = self.xyz_converter.cpu()
-        symmids,symmRs,symmmeta,symmoffset = symm_subunit_matrix(symm)
-        O = symmids.shape[0]
 
         ###
         # pass 1, combined MSA
@@ -219,6 +217,17 @@ class Predictor():
         for i in range(1,len(Ls_blocked)):
             msa_orig = merge_a3m_hetero(msa_orig, {'msa':msas[i],'ins':inss[i]}, [sum(Ls_blocked[:i]),Ls_blocked[i]])
         msa_orig, ins_orig = msa_orig['msa'], msa_orig['ins']
+
+        # pseudo symmetry
+        if symm.startswith("X"):
+            Osub = int(symm[1:])
+            if Osub > 1:
+                msa_orig, ins_orig = merge_a3m_homo(msa_orig, ins_orig, Osub, mode=msa_concat_mode)
+                Ls = sum([Ls] * Osub,[])
+            symm = "C1"
+
+        symmids,symmRs,symmmeta,symmoffset = symm_subunit_matrix(symm)
+        O = symmids.shape[0]
 
         ###
         # pass 2, templates
@@ -334,7 +343,7 @@ class Predictor():
             msa = msa_orig.long().to(self.device) # (N, L)
             ins = ins_orig.long().to(self.device)
 
-            print ("Input size", msa.shape[1], msa.shape[0])
+            print(f"N={msa.shape[0]} L={msa.shape[1]}")
             N, L = msa.shape[:2]
             O = symmids.shape[0]
             Osub = symmsub.shape[0]
