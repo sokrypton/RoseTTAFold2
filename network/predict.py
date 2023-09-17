@@ -189,7 +189,7 @@ class Predictor():
     def predict(
         self, inputs, out_prefix, symm="C1", ffdb=None,
         n_recycles=4, n_models=1, subcrop=-1, nseqs=256, nseqs_full=2048,
-        n_templ=4, msa_mask=0.0, is_training=False, msa_concat_mode="default"
+        n_templ=4, msa_mask=0.0, is_training=False, msa_concat_mode="diag"
     ):
         self.xyz_converter = self.xyz_converter.cpu()
 
@@ -305,6 +305,7 @@ class Predictor():
         mask_t_2d = mask_t_2d.float()*same_chain.float()[:,None] # (ignore inter-chain region)
         t2d = xyz_to_t2d(xyz_t, mask_t_2d)
 
+        logits_pae_list = []
 
         if is_training:
             self.model.train()
@@ -315,7 +316,7 @@ class Predictor():
             #    continue
             torch.cuda.reset_peak_memory_stats()
             start_time = time.time()
-            self.run_prediction(
+            logits_pae = self.run_prediction(
                 msa_orig, ins_orig, 
                 t1d, t2d, xyz_t[:,:,:,1], alpha_t, mask_t_2d, 
                 xyz_prev, mask_prev, same_chain, idx_pdb,
@@ -324,10 +325,15 @@ class Predictor():
                 "%s_%02d"%(out_prefix, i_trial),
                 msa_mask=msa_mask
             )
+
+            logits_pae_list.append(logits_pae)
+
             runtime = time.time() - start_time
             vram = torch.cuda.max_memory_allocated() / 1e9
             print(f"runtime={runtime:.2f} vram={vram:.2f}")
             torch.cuda.empty_cache()
+
+        return logits_pae_list
 
     def run_prediction(
         self, msa_orig, ins_orig, 
@@ -430,6 +436,8 @@ class Predictor():
                 best_aa = logit_aa_s
                 best_lddt = pred_lddt.cpu()
                 best_pae = pae.float().cpu()
+                best_logits_pae = logits_pae.detach().cpu().numpy()
+
 
             prob_s = list()
             for logit in best_logit:
@@ -455,7 +463,8 @@ class Predictor():
         #monomer_rms, complex_rms, best_xyzfull = calc_symm_rmsd(best_xyzfull, native, O)
         #outdata['monomer_rms'] = monomer_rms.item()
         #outdata['complex_rms'] = complex_rms.item()
-        outdata['mean_plddt'] = best_lddt.mean().item()
+        outdata['plddt'] = best_lddt[0].cpu().numpy().tolist()
+        outdata['pae'] = best_pae[0].cpu().numpy().tolist()
         for i in range(O):
             outdata['pae_chain0_'+str(i)] = 0.5 * (best_pae[:,0:Lasu,i*Lasu:(i+1)*Lasu].mean() + best_pae[:,i*Lasu:(i+1)*Lasu,0:Lasu].mean()).item()
 
@@ -470,7 +479,7 @@ class Predictor():
             lddt=best_lddt[0].detach().cpu().numpy().astype(np.float16),
             pae=best_pae[0].detach().cpu().numpy().astype(np.float16))
 
-
+        return best_logits_pae
 
 if __name__ == "__main__":
     args = get_args()
