@@ -22,9 +22,6 @@ import random
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# fd temp for testing
-#torch.cuda.set_per_process_memory_fraction(15360/32510, 0)
-
 def get_args():
     default_model = os.path.dirname(__file__)+"/weights/RF2_apr23.pt"
     print (default_model)
@@ -43,9 +40,7 @@ def get_args():
     parser.add_argument("-model", default=default_model, help="Model weights. [weights/RF2_apr23.pt]")
     parser.add_argument("-n_recycles", default=3, type=int, help="Number of recycles to use [3].")
     parser.add_argument("-n_models", default=1, type=int, help="Number of models to predict [1].")
-    parser.add_argument("-subcrop", default=-1, type=int, help="Subcrop pair-to-pair updates. A value of -1 means no subcropping. [-1]")
-    parser.add_argument("-topk", default=2048, type=int, help="Limit number of residue-pair neighbors in structure updates. A value of -1 means no subcropping. [2048]")
-    parser.add_argument("-low_vram", default=False, help="Offload some computations to CPU to allow larger systems in low VRAM. [False]", action='store_true')
+    parser.add_argument("-subcrop", default=-1, type=int, help="Subcrop pair-to-pair updates. For very large models (>3000 residues) a subcrop of 800-1600 can improve structure accuracy and reduce runtime. A value of -1 means no subcropping. [-1]")
     parser.add_argument("-nseqs", default=256, type=int, help="The number of MSA sequences to sample in the main 1D track [256].")
     parser.add_argument("-nseqs_full", default=2048, type=int, help="The number of MSA sequences to sample in the wide-MSA 1D track [2048].")
     args = parser.parse_args()
@@ -188,13 +183,13 @@ class Predictor():
         if not os.path.exists(model_weights):
             return False
         checkpoint = torch.load(model_weights, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'],strict=False)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
         return True
 
     def predict(
         self, inputs, out_prefix, symm="C1", ffdb=None,
-        n_recycles=4, n_models=1, subcrop=-1, topk=-1, low_vram=False, nseqs=256, nseqs_full=2048,
-        n_templ=4, msa_mask=0.0, is_training=False, msa_concat_mode="diag"
+        n_recycles=4, n_models=1, subcrop=-1, nseqs=256, nseqs_full=2048,
+        n_templ=4, msa_mask=0.0, is_training=False, msa_concat_mode="default"
     ):
         self.xyz_converter = self.xyz_converter.cpu()
 
@@ -213,15 +208,10 @@ class Predictor():
                 msa_i = msa_i[idxs_tokeep]
                 ins_i = ins_i[idxs_tokeep]
 
-            #LL = 3000
-            #msa_i = msa_i[:,:LL]
-            #ins_i = ins_i[:,:LL]
-            #Ls_i = [LL]
-
             msas.append(msa_i)
             inss.append(ins_i)
             Ls.extend(Ls_i)
-            Ls_blocked.append(msa_i.shape[1])
+            Ls_blocked.append(msa_i.shape[0])
 
         msa_orig = {'msa':msas[0],'ins':inss[0]}
         for i in range(1,len(Ls_blocked)):
@@ -315,6 +305,7 @@ class Predictor():
         mask_t_2d = mask_t_2d.float()*same_chain.float()[:,None] # (ignore inter-chain region)
         t2d = xyz_to_t2d(xyz_t, mask_t_2d)
 
+
         if is_training:
             self.model.train()
         else:
@@ -329,7 +320,7 @@ class Predictor():
                 t1d, t2d, xyz_t[:,:,:,1], alpha_t, mask_t_2d, 
                 xyz_prev, mask_prev, same_chain, idx_pdb,
                 symmids, symmsub, symmRs, symmmeta,  Ls, 
-                n_recycles, nseqs, nseqs_full, subcrop, topk, low_vram,
+                n_recycles, nseqs, nseqs_full, subcrop,
                 "%s_%02d"%(out_prefix, i_trial),
                 msa_mask=msa_mask
             )
@@ -343,7 +334,7 @@ class Predictor():
         t1d, t2d, xyz_t, alpha_t, mask_t, 
         xyz_prev, mask_prev, same_chain, idx_pdb, 
         symmids, symmsub, symmRs, symmmeta, L_s, 
-        n_recycles, nseqs, nseqs_full, subcrop, topk, low_vram, out_prefix,
+        n_recycles, nseqs, nseqs_full, subcrop, out_prefix,
         msa_mask=0.0,
     ):
         self.xyz_converter = self.xyz_converter.to(self.device)
@@ -398,14 +389,8 @@ class Predictor():
                 msa_extra = msa_extra.unsqueeze(0)
 
                 with torch.cuda.amp.autocast(True):
-                    #fd memory savings
-                    msa_seed = msa_seed.half()
-                    msa_extra = msa_extra.half()
-                    t1d = t1d.half()
-                    t2d = t2d.half()
-
                     logit_s, logit_aa_s, _, logits_pae, p_bind, xyz_prev, alpha, symmsub, pred_lddt, msa_prev, pair_prev, state_prev = self.model(
-                                                               msa_seed, msa_extra,
+                                                               msa_seed.half(), msa_extra.half(),
                                                                seq, xyz_prev, 
                                                                idx_pdb,
                                                                t1d=t1d, t2d=t2d, xyz_t=xyz_t,
@@ -415,8 +400,6 @@ class Predictor():
                                                                pair_prev=pair_prev,
                                                                state_prev=state_prev,
                                                                p2p_crop=subcrop,
-                                                               topk_crop=topk,
-                                                               low_vram=low_vram,
                                                                mask_recycle=mask_recycle,
                                                                symmids=symmids,
                                                                symmsub=symmsub,
@@ -514,8 +497,6 @@ if __name__ == "__main__":
         n_recycles=args.n_recycles, 
         n_models=args.n_models, 
         subcrop=args.subcrop, 
-        low_vram=args.low_vram, 
-        topk=args.topk, 
         nseqs=args.nseqs, 
         nseqs_full=args.nseqs_full, 
         ffdb=ffdb)

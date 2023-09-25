@@ -86,5 +86,4 @@ class SE3TransformerWrapper(nn.Module):
         else:
             node_features = {'0': type_0_features}
         edge_features = {'0': edge_features}
-
         return self.se3(G, node_features, edge_features)

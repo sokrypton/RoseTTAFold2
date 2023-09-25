@@ -146,8 +146,7 @@ class VersatileConvSE3(nn.Module):
         with nvtx_range(f'VersatileConvSE3'):
             num_edges = features.shape[0]
             in_dim = features.shape[2]
-            EDGESTRIDE = 16384
-            if (self.training or num_edges<=EDGESTRIDE):
+            if (self.training or num_edges<=4096):
                 with nvtx_range(f'RadialProfile'):
                     radial_weights = self.radial_func(invariant_edge_feats) \
                         .view(-1, self.channels_out, self.channels_in * self.freq_sum)
@@ -167,6 +166,7 @@ class VersatileConvSE3(nn.Module):
                     
             else:
                 #fd reduce memory in inference
+                EDGESTRIDE = 65536 #16384
                 if basis is not None:
                     out_dim = basis.shape[-1]
                     if self.fuse_level != ConvSE3FuseLevel.FULL:
